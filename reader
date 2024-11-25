@@ -1,0 +1,203 @@
+# mmi_reader.py
+
+import struct
+from datetime import datetime
+from typing import List, Dict, Any
+import argparse
+
+class MMIReader:
+    """MMI檔案讀取器"""
+    
+    def __init__(self, debug_mode: bool = False):
+        self.debug = debug_mode
+        self.records = []
+        
+    def read_file(self, filename: str) -> None:
+        """讀取MMI檔案"""
+        print(f"開始讀取檔案: {filename}")
+        
+        try:
+            with open(filename, 'rb') as f:
+                data = f.read()
+                
+            # 檢查檔案標頭
+            if len(data) < 16:
+                raise ValueError("檔案過小")
+                
+            header = data[:16]
+            if self.debug:
+                print(f"檔案標頭: {header.hex()}")
+            
+            # 解析記錄
+            pos = 16
+            record_count = 0
+            
+            while pos < len(data):
+                try:
+                    # 讀取一個區塊
+                    block = data[pos:pos+32]  # 先讀32 bytes
+                    if len(block) < 4:  # 至少需要4 bytes
+                        break
+                        
+                    # 解析區塊
+                    record = self._parse_block(block)
+                    if record:
+                        self.records.append(record)
+                        record_count += 1
+                        if self.debug and record_count % 100 == 0:
+                            print(f"已解析 {record_count} 筆記錄...")
+                            
+                    # 移動到下一個區塊
+                    pos += 1
+                    
+                except Exception as e:
+                    if self.debug:
+                        print(f"解析錯誤 at {pos}: {str(e)}")
+                    pos += 1
+                    continue
+                    
+            print(f"檔案解析完成，共 {record_count} 筆記錄")
+            
+        except Exception as e:
+            print(f"檔案讀取失敗: {str(e)}")
+            
+    def _parse_block(self, data: bytes) -> Dict[str, Any]:
+        """解析資料區塊"""
+        try:
+            # 檢查是否為記錄開始
+            if not self._is_record_start(data):
+                return None
+                
+            # 解析時間戳記
+            timestamp = self._parse_timestamp(data[1:7])
+            if not timestamp:
+                return None
+                
+            # 解析記錄類型
+            record_type = data[0]
+            
+            # 解析資料
+            record_data = data[7:]
+            decoded_data = self._decode_data(record_type, record_data)
+            
+            return {
+                'timestamp': timestamp,
+                'type': record_type,
+                'data': decoded_data,
+                'raw': data.hex()
+            }
+            
+        except Exception as e:
+            if self.debug:
+                print(f"區塊解析錯誤: {str(e)}")
+            return None
+            
+    def _is_record_start(self, data: bytes) -> bool:
+        """檢查是否為記錄開始"""
+        # 這裡需要根據實際MMI格式調整
+        # 目前簡單檢查時間戳記是否合理
+        try:
+            year = data[1]
+            month = data[2]
+            day = data[3]
+            hour = data[4]
+            minute = data[5]
+            second = data[6]
+            
+            return (
+                0 <= year <= 99 and
+                1 <= month <= 12 and
+                1 <= day <= 31 and
+                0 <= hour <= 23 and
+                0 <= minute <= 59 and
+                0 <= second <= 59
+            )
+        except:
+            return False
+            
+    def _parse_timestamp(self, data: bytes) -> datetime:
+        """解析時間戳記"""
+        try:
+            year, month, day, hour, minute, second = struct.unpack('6B', data)
+            return datetime(2000 + year, month, day, hour, minute, second)
+        except:
+            return None
+            
+    def _decode_data(self, record_type: int, data: bytes) -> Dict[str, Any]:
+        """解碼資料"""
+        try:
+            if record_type in [0x02, 0x03]:  # ATP狀態或速度記錄
+                value = int.from_bytes(data[:2], 'big') if len(data) >= 2 else 0
+                return {
+                    'value': value,
+                    'description': self._get_type_description(record_type)
+                }
+            return {
+                'raw_data': data.hex(),
+                'description': self._get_type_description(record_type)
+            }
+        except:
+            return {'raw_data': data.hex()}
+            
+    def _get_type_description(self, record_type: int) -> str:
+        """取得記錄類型描述"""
+        type_map = {
+            0x01: "系統狀態",
+            0x02: "ATP狀態",
+            0x03: "速度記錄",
+            0x04: "位置記錄",
+            0x05: "警告事件",
+            0x06: "操作事件"
+        }
+        return type_map.get(record_type, f"未知類型({record_type:02x})")
+        
+    def print_summary(self):
+        """顯示解析摘要"""
+        if not self.records:
+            print("無解析記錄")
+            return
+            
+        # 計算記錄類型統計
+        type_counts = {}
+        for record in self.records:
+            r_type = record['type']
+            type_counts[r_type] = type_counts.get(r_type, 0) + 1
+            
+        # 顯示時間範圍
+        timestamps = [r['timestamp'] for r in self.records]
+        start_time = min(timestamps)
+        end_time = max(timestamps)
+        
+        print("\n解析結果摘要:")
+        print("-" * 40)
+        print(f"記錄時間: {start_time} 至 {end_time}")
+        print(f"總記錄數: {len(self.records)}")
+        print("\n記錄類型分布:")
+        for r_type, count in sorted(type_counts.items()):
+            desc = self._get_type_description(r_type)
+            print(f"- {desc}: {count} 筆")
+            
+    def print_records(self, limit: int = 10):
+        """顯示解析記錄"""
+        print(f"\n前 {limit} 筆記錄:")
+        print("-" * 60)
+        for record in self.records[:limit]:
+            print(f"時間: {record['timestamp']}")
+            print(f"類型: {self._get_type_description(record['type'])}")
+            print(f"資料: {record['data']}")
+            print("-" * 60)
+
+def main():
+    parser = argparse.ArgumentParser(description='MMI檔案解析工具')
+    parser.add_argument('filename', help='MMI檔案路徑')
+    parser.add_argument('-d', '--debug', action='store_true', help='啟用除錯模式')
+    parser.add_argument('-l', '--limit', type=int, default=10, help='顯示記錄筆數限制')
+    args = parser.parse_args()
+
+    reader = MMIReader(debug_mode=args.debug)
+    reader.read_file(args.filename)
+    reader.print_summary()
+    reader.print_records(args.limit)
+
+if __name__ == '__main__':
+    main()
